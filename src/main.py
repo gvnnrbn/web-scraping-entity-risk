@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 import uvicorn
 from model import EntityRiskData, OFACformat
 from typing import Optional
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, TimeoutError as PWTimeoutError
 
 app = FastAPI()
 
@@ -10,9 +10,7 @@ app = FastAPI()
 async def get_entity_risk_data(name: str):
     result1 = await scrape_ofac(name)
     if result1 is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No results found for {name}")
+        raise HTTPException(status_code=404, detail="No results found")
     data = EntityRiskData(ofacResults=result1, ofacHits=len(result1))
     return data
 
@@ -20,7 +18,8 @@ async def scrape_ofac(name_input: str) -> Optional[list[OFACformat]]:
     results = []
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            #iniciar instancia sin interfaz y contexto del navegador
+            browser = await p.chromium.launch(headless=True) 
             context = await browser.new_context()
             page = await context.new_page()
 
@@ -30,8 +29,11 @@ async def scrape_ofac(name_input: str) -> Optional[list[OFACformat]]:
             # "check" Search button before clicking it
             await page.locator("#ctl00_MainContent_btnSearch").click()
 
-            # "check" table is rendered 
             table = page.locator("#gvSearchResults")
+            # handling no results 
+            if await table.count() == 0:
+                return None
+
             await table.locator("tr").first.wait_for()
 
             rows = await table.locator("tr").all()
@@ -51,8 +53,10 @@ async def scrape_ofac(name_input: str) -> Optional[list[OFACformat]]:
 
             await browser.close()
         return results
-    except ValueError:
-            return None
+    except PWTimeoutError:
+        raise HTTPException(status_code=504, detail="Timeout obtaining OFAC data")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpecter error: {e}")
 
 @app.get("/")
 async def root():
